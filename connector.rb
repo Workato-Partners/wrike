@@ -6,28 +6,60 @@ descriptor = {
   connection: {
     fields: [
       {
-         name: "client_id",
-         control_type: "text",
-         label: "Client ID",
-         optional: false,
-         hint: "Your client id"
+        name: "client_id",
+        control_type: "text",
+        label: "Client ID",
+        optional: false,
+        hint: "Your client id"
       },
       {
-         name: "client_secret",
-         control_type: "password",
-         label: "Client secret",
-         optional: false,
-         hint: "Your client secret"
-      }  
+        name: "client_secret",
+        control_type: "password",
+        label: "Client secret",
+        optional: false,
+        hint: "Your client secret"
+      },
+      {
+        name: "advanced_settings",
+        optional: true,
+        type: "object",
+        properties: [
+          {
+            name: "api_scope", control_type: "multiselect",
+            delimiter: ",",
+            optional: true,
+            options: [
+              ["WSREADONLY", "wsReadOnly"],
+              ["WSREADWRITE", "wsReadWrite"],
+              ["AMREADONLYWORKFLOW", "amReadOnlyWorkflow"],
+              ["AMREADWRITEWORKFLOW", "amReadWriteWorkflow"],
+              ["AMREADONLYINVITATION", "amReadOnlyInvitation"],
+              ["AMREADWRITEINVITATION", "amReadWriteInvitation"],
+              ["AMREADONLYGROUP", "amReadOnlyGroup"],
+              ["AMREADWRITEGROUP", "amReadWriteGroup"],
+              ["AMREADONLYUSER", "amReadOnlyUser"],
+              ["AMREADWRITEUSER", "amReadWriteUser"],
+              ["AMREADONLYAUDITLOG", "amReadOnlyAuditLog"]
+            ],
+            hint: 'Select <a href="https://developers.wrike.com/documentation/api/overview" target="_blank">permissions</a>' \
+            "to request for this connection. Defaults to <b>Default</b> if left blank." \
+            "<br/>Minimum permissions required is <b>Default</b>, which will be always requested in addition to selected permissions." \
+          }
+        ]
+      }
     ],
 
     authorization: {
       type: "oauth2",
       refresh_on: 401,
 
-      authorization_url: ->(input) {
-        scope = "&scope=Default"
-        "https://login.wrike.com/oauth2/authorize/v4?client_id=#{input['client_id']}&response_type=code#{scope}"
+      authorization_url: ->(settings) {
+        scope = if settings.dig("advanced_settings", "api_scope").present?
+                  "&scope=#{settings.dig('advanced_settings', 'api_scope')},Default"
+                else
+                  "&scope=Default"
+                end
+        "https://login.wrike.com/oauth2/authorize/v4?client_id=#{settings['client_id']}&response_type=code#{scope}"
       },
 
       token_url: -> {
@@ -56,14 +88,19 @@ descriptor = {
         ]
       },
 
-      refresh: ->(input, refresh_token) {
+      refresh: ->(settings, refresh_token) {
+        scope = if settings.dig("advanced_settings", "api_scope").present?
+                  "&scope=#{settings.dig('advanced_settings', 'api_scope')},Default"
+                else
+                  "&scope=Default"
+                end
         post("https://login.wrike.com/oauth2/token")
           .payload({
-            client_id: input["client_id"],
-            client_secret: input["client_secret"],
+            client_id: settings["client_id"],
+            client_secret: settings["client_secret"],
             grant_type: :refresh_token,
             refresh_token: refresh_token,
-            scope: "Default"
+            scope: scope
           }.compact)
           .request_format_www_form_urlencoded
       },
@@ -221,7 +258,7 @@ descriptor = {
                 when "Checkbox"
                   { type: :boolean, name: field["id"], label: field["title"], sticky: true, custom: true }
                 when "Numeric"
-                  { control_type: :number, hint: "Example: 32000", name: field["id"], label: field["title"], sticky: true, custom: true}
+                  { control_type: :number, hint: "Example: 32000", name: field["id"], label: field["title"], sticky: true, custom: true }
                 when "Percentage"
                   { type: :string, hint: "Example: 75", name: field["id"], label: field["title"], sticky: true, custom: true }
                 when "Currency"
@@ -513,9 +550,9 @@ descriptor = {
     },
 
     strip_html_tags: ->(response, strip_tags, default) {
-      if response["description"].present?
-        response["description"] = response["description"].strip_tags unless (default.is_not_true? && strip_tags.nil?) || strip_tags == false
-      end
+      next if response["description"].blank? || (default.is_not_true? && strip_tags.nil?) || strip_tags == false
+
+      response["description"] = response["description"].strip_tags
     }
 
     # get_folder_tree: ->(children, data) {
@@ -2512,6 +2549,192 @@ descriptor = {
   },
 
   triggers: {
+    new_or_updated_task: {
+      description: 'New/updated <span class="provider">task</span> in <span class="provider">Wrike</span>',
+      deprecated: true,
+
+      type: :paging_desc,
+
+      input_fields: ->(_) {
+        [
+          {
+            name: "since",
+            type: :timestamp,
+            label: "From",
+            sticky: true,
+            hint: "Get tasks created or updated since given date/time. Leave empty to get tasks created or updated from one hour ago."
+          }
+        ]
+      },
+
+      poll: ->(connection, input, updated_date) {
+        since = (updated_date.presence || input["since"].presence || 1.hour.ago).to_time.utc.iso8601
+        params = {
+          "updatedDate" => "{'start':'#{since}'}",
+          "sortField" => "UpdatedDate",
+          "sortOrder" => "Desc"
+        }
+        response = get(call(:base_uri, connection) + "/tasks", params).after_error_response(400) do |_, body, _, message|
+          error("#{message}: #{body}")
+        end
+
+        next_updated_since = response["data"].last["updatedDate"] if response["data"].present?
+        {
+          events: response["data"],
+          next_page: response["data"].length > 100 ? next_updated_since : nil
+        }
+      },
+
+      document_id: ->(task) {
+        task["id"]
+      },
+
+      sort_by: ->(task) {
+        task["updatedDate"]
+      },
+
+      output_fields: ->(object_definitions) {
+        object_definitions["task"].only(
+          "id", "accountId", "title", "status", "importance", "createdDate", "updatedDate", "scope", "dates", "customStatusId", "permalink", "priority", "project"
+        )
+      },
+
+      sample_output: ->(connection) {
+        get(call(:base_uri, connection) + "/tasks?limit=1&sortField=UpdatedDate&sortOrder=Desc")&.[]("data")&.last || {}
+      }
+    },
+
+    new_comment: {
+      description: 'New <span class="provider">comment</span> in <span class="provider">Wrike</span>',
+      deprecated: true,
+
+      type: :paging_desc,
+
+      input_fields: -> {
+        [
+          { name: "since", type: :date_time, label: "From", sticky: true, hint: "Get comments created since given date/time. Leave empty to get comments created one hour ago" }
+        ]
+      },
+
+      poll: ->(connection, input, updated_date) {
+        since = (updated_date.presence || input["since"].presence || 1.hour.ago).to_time.utc.iso8601
+        params = {
+          "updatedDate" => "{'start':'#{since}'}",
+          "plainText" => true
+        }
+
+        response = get(call(:base_uri, connection) + "/comments", params).after_error_response(400) do |_, body, _, message|
+          error("#{message}: #{body}")
+        end
+        next_updated_since = response["data"].last["updatedDate"] if response["data"].present?
+        next_updated_since ||= (since.to_time + 7.days).to_time.utc.iso8601 if since < 7.days.ago
+        {
+          events: response["data"],
+          next_page: response["data"].length > 100 ? next_updated_since : nil
+        }
+      },
+
+      dedup: ->(comment) {
+        comment["id"]
+      },
+
+      output_fields: ->(object_definitions) {
+        object_definitions["comment"].ignored("plainText")
+      },
+
+      sample_output: ->(connection) {
+        get(call(:base_uri, connection) + "/comments?limit=1")&.[]("data")&.first || {}
+      }
+    },
+
+    new_or_updated_folder: {
+      description: 'New/updated <span class="provider">folder</span> in <span class="provider">Wrike</span>',
+      help: "Use get folder by ID action in corresponding steps to get more information about the folder",
+      deprecated: true,
+
+      type: :paging_desc,
+
+      input_fields: -> {
+        [
+          {
+            name: "since",
+            type: :timestamp,
+            label: "From",
+            sticky: true,
+            hint: "Get folders created or updated since given date/time. Leave empty to get folders created or updated one hour ago"
+          },
+          {
+            name: "strip_tags",
+            label: "Convert to plaintext?",
+            control_type: "checkbox",
+            type: "boolean",
+            default: true,
+            optional: true,
+            render_input: "boolean_conversion",
+            toggle_hint: "Select from options list",
+            hint: "Select <b>Yes</b> to convert description to plain text.",
+            toggle_field: {
+              name: "strip_tags",
+              label: "Convert to plaintext?",
+              type: "string",
+              control_type: "text",
+              optional: true,
+              render_input: "boolean_conversion",
+              toggle_hint: "Provide custom value",
+              hint: "Allowed values are <b>true</b>, <b>false</b>."
+            }
+          }
+        ]
+      },
+
+      poll: ->(connection, input, updated_date) {
+        since = (updated_date.presence || input["since"].presence || 1.hour.ago).to_time.utc.iso8601
+        params = {
+          "updatedDate" => "{'start':'#{since}'}"
+        }
+        response = get(call(:base_uri, connection) + "/folders", params).after_error_response(400) do |_, body, _, message|
+          error("#{message}: #{body}")
+        end
+        response["data"] = response["data"].sort_by do |data|
+          data["updatedDate"]
+        end
+        response["data"].each do |data|
+          call(:strip_html_tags, data, input["strip_tags"], true)
+          call(:format_output, data, %w[sharedIds parentIds childIds])
+          call(:format_output, data["project"], %w[ownerIds]) if data["project"].present?
+        end
+        next_updated_since = response["data"].last["updatedDate"] if response["data"].present?
+        {
+          events: response["data"].reverse,
+          next_page: response["data"].length > 100 ? next_updated_since : nil
+        }
+      },
+
+      document_id: ->(folder) {
+        folder["id"]
+      },
+
+      sort_by: ->(folder) {
+        folder["updatedDate"]
+      },
+
+      output_fields: ->(object_definitions) {
+        object_definitions["folder"].only(
+          "id", "accountId", "title", "createdDate", "updatedDate", "description", "sharedIds", "parentIds",
+          "childIds", "scope", "permalink", "workflowId", "project"
+        )
+      },
+
+      sample_output: ->(connection, input) {
+        folder_id = get(call(:base_uri, connection) + "/folders")&.[]("data")&.last&.[]("id")
+        permalink = get(call(:base_uri, connection) + "/folders/#{folder_id}")&.[]("data")&.first&.[]("permalink")
+        folder = get(call(:base_uri, connection) + "/folders?permalink=#{permalink}")&.[]("data")&.first || {}
+        call(:strip_html_tags, folder, input["strip_tags"], default: false)
+        call(:format_output, folder, %w[sharedIds parentIds childIds])
+        call(:format_output, folder["project"], %w[ownerIds]) if folder["project"].present?
+        folder
+      }
+    },
 
     new_or_updated_task_v2: {
       description: 'New/updated <span class="provider">task</span> in <span class="provider">Wrike</span>',
@@ -2828,7 +3051,8 @@ descriptor = {
                 custom_statuses = call(:get_custom_statuses, connection, true)
                 cs = custom_statuses[data["project"]["customStatusId"]]
               end
-              data["custom_status"] = { name: [cs&.[]("wf_name"), cs&.[]("name")]&.join("|") == "|" ? nil : [cs&.[]("wf_name"), cs&.[]("name")]&.join("|"), id: data["project"]["customStatusId"] }
+              data["custom_status"] =
+                { name: [cs&.[]("wf_name"), cs&.[]("name")]&.join("|") == "|" ? nil : [cs&.[]("wf_name"), cs&.[]("name")]&.join("|"), id: data["project"]["customStatusId"] }
             end
           end
           call(:format_custom_output, data)
@@ -2870,7 +3094,8 @@ descriptor = {
           call(:format_output, folder["project"], %w[ownerIds])
           if folder["project"]["customStatusId"].present?
             cs = call(:get_custom_statuses, connection, false)[folder["project"]["customStatusId"]]
-            folder["custom_status"] = { name: [cs&.[]("wf_name"), cs&.[]("name")]&.join("|") == "|" ? nil : [cs&.[]("wf_name"), cs&.[]("name")]&.join("|"), id: folder["project"]["customStatusId"] }
+            folder["custom_status"] =
+              { name: [cs&.[]("wf_name"), cs&.[]("name")]&.join("|") == "|" ? nil : [cs&.[]("wf_name"), cs&.[]("name")]&.join("|"), id: folder["project"]["customStatusId"] }
           end
         end
         call(:format_custom_output, folder)
@@ -2955,7 +3180,8 @@ descriptor = {
                 custom_statuses = call(:get_custom_statuses, connection, true)
                 cs = custom_statuses[data["project"]["customStatusId"]]
               end
-              data["custom_status"] = { name: [cs&.[]("wf_name"), cs&.[]("name")]&.join("|") == "|" ? nil : [cs&.[]("wf_name"), cs&.[]("name")]&.join("|"), id: data["project"]["customStatusId"] }
+              data["custom_status"] =
+                { name: [cs&.[]("wf_name"), cs&.[]("name")]&.join("|") == "|" ? nil : [cs&.[]("wf_name"), cs&.[]("name")]&.join("|"), id: data["project"]["customStatusId"] }
             end
           end
           call(:format_custom_output, data)
@@ -2997,7 +3223,8 @@ descriptor = {
           call(:format_output, folder["project"], %w[ownerIds])
           if folder["project"]["customStatusId"].present?
             cs = call(:get_custom_statuses, connection, false)[folder["project"]["customStatusId"]]
-            folder["custom_status"] = { name: [cs&.[]("wf_name"), cs&.[]("name")]&.join("|") == "|" ? nil : [cs&.[]("wf_name"), cs&.[]("name")]&.join("|"), id: folder["project"]["customStatusId"] }
+            folder["custom_status"] =
+              { name: [cs&.[]("wf_name"), cs&.[]("name")]&.join("|") == "|" ? nil : [cs&.[]("wf_name"), cs&.[]("name")]&.join("|"), id: folder["project"]["customStatusId"] }
           end
         end
         call(:format_custom_output, folder)
