@@ -310,6 +310,21 @@ descriptor = {
       }
     },
 
+    custom_fields: {
+      fields: -> {
+        [
+          { name: "id", label: "Field ID", hint: "ID of field" },
+          { name: "title", label: "Field Name", hint: "Custom field title" },
+          { name: "type", label: "Field Type", hint: "Custom field type" },
+          { name: "spaceId", label: "Space ID", hint: "ID of Space this field belongs to", optional: true },
+          { name: "sharedIds", label: "Shared User IDs", type: :array, of: :string, hint: "List of User IDs who share the custom field" },
+          { name: "settings", label: "Field Settings", type: :object, properties: [
+            { name: "values", label: "Values", type: :array, of: :string, hint: "Dropdown values for Dropdown or Multiple type fields" }
+          ] }
+        ]
+      }
+    },
+
     comment: {
       fields: -> {
         [
@@ -468,6 +483,25 @@ descriptor = {
           { name: "updatedDate", type: :date_time },
           { name: "trackedDate", type: :date },
           { name: "comment" }
+        ]
+      }
+    },
+
+    workflows: {
+      fields: -> {
+        [
+          { name: "id", label: "Workflow ID" },
+          { name: "spaceId", label: "Space ID", hint: "If null, account workflow. Else, ID of Space this Workflow belongs to." },
+          { name: "name", label: "Workflow Name" },
+          { name: "standard", label: "Standard Workflow", type: :boolean, hint: "Indicates if this is the default workflow" },
+          { name: "hidden", label: "Hidden", type: :boolean, hint: "Indicates if this workflow is hidden" },
+          { name: "customStatuses", label: "Statuses", type: :array, of: :object, properties: [
+            { name: "id", label: "Status ID" },
+            { name: "name", label: "Status Name" },
+            { name: "standardName", label: "Standard Name", type: :boolean, hint: "Indicates if this is the default status" },
+            { name: "group", label: "Status Group", hint: "Status Group; Active, Completed, Cancelled, or Deferred" },
+            { name: "hidden", label: "Hidden", hint: "Indicates if the status is hidden"}
+          ] }
         ]
       }
     }
@@ -641,6 +675,7 @@ descriptor = {
     },
 
     search_task: {
+      deprecated: true
       title: "Search tasks",
       description: 'Search <span class="provider">task</span> in <span class="provider">Wrike</span>',
       help: "Retrieves only tasks that match all the values entered in the filters below. " \
@@ -711,6 +746,217 @@ descriptor = {
       sample_output: ->(connection) {
         get(call(:base_uri, connection) + "/tasks?limit=1&sortField=UpdatedDate&sortOrder=Desc") || {}
       }
+    },
+
+    search_task_v2: {
+      title: "Search tasks",
+      description: "Search <span class='provider'>#{'task'.pluralize}</span> in <span class='provider'>Wrike</span>",
+      help: "Search among all tasks in the current Wrike account, a specific space, or a specific folder/project. "\
+            "Retrieves only tasks that match all the values entered in the filters below. Search results are returned as a list of tasks. " \
+            "A maximum of 1000 tasks can be returned. If nextPageToken is returned, use List Next Page to retrieve the next page of results.",
+
+      config_fields: [
+        {
+          name: 'search_domain',
+          control_type: :select,
+          label: "Search in Account, Space, or Folder",
+          hint: "Select whether to search tasks in the entire current Wrike account, a specific Space, or a specific Folder/Project",
+          pick_list: 'domains',
+          optional: false
+        },
+        {
+          ngIf: 'input.search_domain == "Space"',
+          name: "space_id",
+          label: "Space",
+          control_type: :select,
+          pick_list: "spaces",
+          hint: "Select a space to retrieve tasks from. To use space ID instead, toggle to 'Enter a space ID'.",
+          toggle_hint: "Select a space",
+          toggle_field: {
+            toggle_hint: "Enter a space ID",
+            name: "space_id",
+            control_type: :text,
+            type: "string",
+            hint: "Enter a space ID. To choose a space instead, toggle to 'Select a space'.",
+            label: "Space ID",
+          }
+        },
+        {
+          ngIf: 'input.search_domain == "Folder"',
+          name: "folder_id",
+          label: "Folder",
+          control_type: :select,
+          pick_list: "folders",
+          hint: "Select a folder to retrieve tasks from. To use folder ID instead, toggle to 'Enter a folder ID'.",
+          toggle_hint: "Select a folder",
+          toggle_field: {
+            toggle_hint: "Enter a folder ID",
+            name: "folder_id",
+            control_type: :text,
+            type: "string",
+            hint: "Enter a folder ID. To choose a folder instead, toggle to 'Select a folder'.",
+            label: "Folder ID",
+          }
+        },
+        {
+          name: "custom_field_list",
+          control_type: :select,
+          label: "Search custom field",
+          hint: "Select a custom field to search with",
+          pick_list: "custom_fields",
+          extends_schema: true
+        },
+        {
+          name: "field_list",
+          control_type: :multiselect,
+          hint: "Select the custom fields to be returned in the output datatree. If left blank, all custom fields will be retrieved.",
+          pick_list: "custom_fields",
+          label: "Custom fields",
+          optional: true,
+          sticky: true,
+          delimiter: "\n"
+        }
+      ],
+
+      input_fields: ->(object_definitions) {
+        object_definitions["custom_field"].concat(
+          object_definitions["task"].only(
+            "importance", "updatedDate", "completedDate", "permalink", "type"
+          )
+        ).concat([
+                {
+                  name: "strip_tags",
+                  label: "Convert Description to plaintext?",
+                  control_type: "checkbox",
+                  type: "boolean",
+                  default: true,
+                  optional: true,
+                  render_input: "boolean_conversion",
+                  toggle_hint: "Select from options list",
+                  hint: "Defaults to Yes. Select <b>No</b> to retrieve the raw HTML description.",
+                  toggle_field: {
+                    name: "strip_tags",
+                    label: "Convert Description to plaintext?",
+                    type: "string",
+                    control_type: "text",
+                    optional: true,
+                    render_input: "boolean_conversion",
+                    toggle_hint: "Provide custom value",
+                    hint: "Allowed values are <b>true</b>, <b>false</b>."
+                    }
+                  },
+                  { name: "descendants", control_type: :checkbox, type: 'boolean', default: false, hint: "Defaults to No. Select <b>Yes</b> to include descendants in Search." },
+                  { name: "title", type: 'string', control_type: :text, hint: 'Search by title, contains match' },
+                  # { name: "startDate", control_type: :key_value, empty_list_title: "Add search parameters", empty_list_text: "Add key 'equal' for exact match, or 'start' and/or 'end' for semi-open range search.", item_label: "Search parameter", type: "array", of: "object", properties: [{ name: "key"}, {name: "value"}], hint: "Search by Task Start Date. Dates should be formatted yyyy-MM-dd (optional THH:mm:ss). Keys can be either 'exact' or 'start' and/or 'end'."},
+                  # { name: "dueDate" },
+                  # { name: "scheduleDate" },
+                  # { name: "createdDate" },
+                  { name: "subTasks", label: 'Include Subtasks', control_type: :checkbox, type: 'boolean', default: false, hint: 'Defaults to No. Select <b>Yes</b> to include subtasks in Search' },
+                  { name: "customStatuses", control_type: :multiselect, pick_list: :custom_statuses, sticky: true, hint: "Select custom statuses." },
+                  { name: "status", label: 'Status Group', control_type: :multiselect, pick_list: :task_status, hint: "Select one or more Task Status Groups to include." },
+                  { name: "created_after", type: :date_time, hint: "Search tasks created after this time" },
+                  { name: "type", hint: "Retrieves tasks of specified type. Allowed values are <b>Backlog</b>, <b>Milestone</b>, and <b>Planned</b>." },
+                  { name: "responsibles", label: "Assignees", control_type: :multiselect, hint: "Select the assignees to include", pick_list: :contacts, optional: true },
+                  { name: "responsibles_list", label: "Assignees List", control_type: :array, hint: "Map in a list of User IDs. Will override any selection made via Assignees picklist"},
+                  { name: "authors", control_type: :multiselect, hint: "Select Users; selection will be used to filter by Author", pick_list: :contacts, optional: true }, # TODO: enable entering a list
+                  { name: "limit", control_type: :integer, hint: "Specify a maximum number of items to return." },
+                  { name: "sortField", control_type: :select, pick_list: %w[CreatedDate UpdatedDate CompletedDate DueDate StartFinishInterval Status Importance Title LastAccess Date] },
+                  { name: "sortOrder", control_type: :select, pick_list: %w[Asc Desc], hint: "Default is Asc" },
+                  { name: "pageSize", control_type: :integer, hint: "Default 1000. Allowed values are 1-1000", default: 1000}])
+      },
+
+      execute: ->(connection, input) {
+        domain = case input["search_domain"]
+        when 'Space'
+          "/spaces/#{input["space_id"]}"
+        when 'Folder'
+          "/folders/#{input["folder_id"]}"
+        else
+          ''
+        end
+        strip_tags = input["strip_tags"]
+        input["createdDate"] = { start: input.delete("created_after").to_time.utc.iso8601 }.to_json if input["created_after"].present?
+        input.each { |k, v| input[k] = { start: v.to_time.utc.iso8601 }.to_json if k.ends_with?("Date") }
+        input["responsibles"] = input["responsibles_list"] if input["responsibles_list"].present?
+        input = input.except("custom_field_list", "field_list", "search_domain", "space_id", "folder_id", "strip_tags")
+        input["fields"] = '["recurrent","description","briefDescription","parentIds","superParentIds","sharedIds","responsibleIds","authorIds",' \
+                          '"hasAttachments","attachmentCount","superTaskIds","subTaskIds","dependencyIds","metadata","customFields","customItemTypeId"]'
+        res = get(call(:base_uri, connection) + "#{domain}/tasks", input.compact).after_error_response(400) do |_, body, _, message|
+          error("#{message}: #{body}")
+        end
+
+        res["data"].each do |data|
+          call(:strip_html_tags, data, strip_tags, true)
+          call(:format_response, data, connection)
+        end
+        res["uri"] = call(:base_uri, connection) + "#{domain}/tasks?fields=#{input["fields"]}"
+        res
+      },
+
+      output_fields: ->(object_definitions) {
+        [
+          { name: "data",
+            label: "Tasks",
+            type: :array,
+            of: :object,
+            properties: object_definitions["task"].only(
+              "id", "accountId", "title", "status", "importance", "createdDate", "updatedDate", "completedDate", "dates", "scope",
+              "parentIds", "superParentIds", "sharedIds", "responsibleIds", "authorIds", "superTaskIds", "subTaskIds", "dependencyIds",
+              "customStatusId", "custom_status", "permalink", "priority", "timelogHours"
+            ).concat(object_definitions["custom"]) },
+          { name: 'nextPageToken', label: 'Next Page Token', type: :string, optional: true },
+          { name: 'responseSize', label: 'Response Size', type: :integer, optional: true },
+          { name: 'uri', label: 'Page URI', type: :string, optional: true }
+        ]
+      },
+
+      sample_output: ->(connection) {
+        get(call(:base_uri, connection) + "/tasks?limit=1&sortField=UpdatedDate&sortOrder=Desc") || {}
+      },
+      
+      retry_on_response: [429, 401],
+
+      max_retries: 3
+    },
+
+    get_next_page: {
+      title: 'Get next page',
+      description: 'Get next page of a paginated response',
+      help: 'Get the next page of a paginated response using a nextPageToken received from a previous step.',
+      config_fields: [],
+      input_fields: -> {[{ name: 'nextPageToken', label: 'Next Page Token', control_type: :plain_text, optional: false },
+                      { name: 'pageURI', label: 'Page URI', control_type: :text, hint: 'The URI to use for fetching pages. It must have the same base endpoint and fields list as the original call.', optional: false}]},
+
+      execute: ->(connection, input) {
+        res = get(call("#{input['pageURI']}&nextPageToken=#{input['nextPageToken']}")).after_error_response(400) do |_, body, _, message|
+          error("#{message}: #{body}")
+        end
+        res
+      },
+
+      output_fields: ->(object_definitions) {
+        [
+          { name: "data",
+            label: "Tasks",
+            type: :array,
+            of: :object,
+            properties: object_definitions["task"].only(
+              "id", "accountId", "title", "status", "importance", "createdDate", "updatedDate", "completedDate", "dates", "scope",
+              "parentIds", "superParentIds", "sharedIds", "responsibleIds", "authorIds", "superTaskIds", "subTaskIds", "dependencyIds",
+              "customStatusId", "custom_status", "permalink", "priority", "timelogHours"
+            ).concat(object_definitions["custom"])
+          },
+          { name: 'nextPageToken', label: 'Next Page Token', type: :string, optional: true }
+        ]
+      },
+
+      sample_output: ->(connection) {
+        get(call(:base_uri, connection) + "/tasks?limit=1&sortField=UpdatedDate&sortOrder=Desc") || {}
+      },
+
+      retry_on_response: [429, 401],
+
+      max_retries: 3
     },
 
     create_task: {
@@ -951,6 +1197,48 @@ descriptor = {
 
       sample_output: ->(connection) {
         get(call(:base_uri, connection) + "/contacts?me=true")
+      }
+    },
+
+    list_custom_fields: {
+      description: 'List <span class="provider">custom fields</span> in <span class="provider">Wrike</span>',
+      help: "Retrieves the full list of custom fields in connected account. Field IDs may be used in subsequent Wrike actions.",
+
+      execute: ->(connection) {
+        get(call(:base_uri, connection) + "/customfields").after_error_response(400) do |_, body, _, message|
+          error("#{message}: #{body}")
+        end
+      },
+
+      output_fields: ->(object_definitions) {
+        [
+          { name: "data", label: "Custom Field", type: :array, of: :object, properties: object_definitions["custom_fields"] }
+        ]
+      },
+
+      sample_output: ->(connection) {
+        get(call(:base_uri, connection) + "/customfields")&.[]("data")&.first
+      }
+    },
+
+    list_workflows: {
+      description: 'List <span class="provider">workflows and statuses</span> in <span class="provider">Wrike</span>',
+      help: "Retrieves the full list of workflows and their statuses in connected account. Workflow or Status IDs may be used in subsequent Wrike actions.",
+
+      execute: ->(connection) {
+        get(call(:base_uri, connection) + "/workflows").after_error_response(400) do |_, body, _, message|
+          error("#{message}: #{body}")
+        end
+      },
+
+      output_fields: ->(object_definitions) {
+        [
+          { name: "data", label: "Workflow", type: :array, of: :object, properties: object_definitions["workflows"] }
+        ]
+      },
+
+      sample_output: ->(connection) {
+        get(call(:base_uri, connection) + "/workflows")&.[]("data")&.first
       }
     },
 
@@ -3259,14 +3547,29 @@ descriptor = {
       end || []
     },
 
+    domains: -> {
+      %w[Account Space Folder].map { |s| [s, s] }
+    },
+
     folders: ->(connection) {
       folders = get(call(:base_uri, connection) + "/folders")&.[]("data")
       folders.present? ? folders.map { |f| [f["title"], f["id"]] } : []
     },
 
+    spaces: ->(connection) {
+      spaces = get(call(:base_uri, connection) + "/spaces")&.[]("data")
+      spaces.present? ? spaces.map { |s| [s['title'], s['id']] } : []
+    },
+
     timelog_categories: ->(connection) {
       timelog_categories = get(call(:base_uri, connection) + "/timelog_categories")&.[]("data")
       timelog_categories.present? ? timelog_categories.map { |f| [f["name"], f["id"]] } : []
+    },
+    
+    contacts: ->(connection) {
+      contacts = get(call(:base_uri, connection) + "/contacts")&.[]("data")
+      contacts.select { |contact| contact['type'] == 'Person' && !contact['deleted'] }
+              .map { |contact| ["#{contact['firstName']} #{contact['lastName']}", contact['id']] }
     }
   }
 }
