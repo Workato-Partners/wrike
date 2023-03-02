@@ -889,7 +889,7 @@ descriptor = {
           call(:strip_html_tags, data, strip_tags, true)
           call(:format_response, data, connection)
         end
-        res["uri"] = call(:base_uri, connection) + "#{domain}/tasks?fields=#{input["fields"]}"
+        res["endpoint"] = "#{domain}/tasks?fields=#{input["fields"]}"
         res
       },
 
@@ -906,7 +906,7 @@ descriptor = {
             ).concat(object_definitions["custom"]) },
           { name: 'nextPageToken', label: 'Next Page Token', type: :string, optional: true },
           { name: 'responseSize', label: 'Response Size', type: :integer, optional: true },
-          { name: 'uri', label: 'Page URI', type: :string, optional: true }
+          { name: 'endpoint', label: 'API Endpoint', type: :string, optional: true }
         ]
       },
 
@@ -924,11 +924,13 @@ descriptor = {
       description: 'Get next page of a paginated response',
       help: 'Get the next page of a paginated response using a nextPageToken received from a previous step.',
       config_fields: [],
-      input_fields: -> {[{ name: 'nextPageToken', label: 'Next Page Token', control_type: :plain_text, optional: false },
-                      { name: 'pageURI', label: 'Page URI', control_type: :text, hint: 'The URI to use for fetching pages. It must have the same base endpoint and fields list as the original call.', optional: false}]},
+      input_fields: -> {[{ name: 'nextPageToken', label: 'Next Page Token', control_type: :text, optional: false },
+      { name: 'endpoint', label: 'API Endpoint', control_type: :text, hint: 'The endpoint to use for fetching pages. It must have the same base endpoint and fields list as the original call.', optional: false}]},
 
       execute: ->(connection, input) {
-        res = get(call("#{input['pageURI']}&nextPageToken=#{input['nextPageToken']}")).after_error_response(400) do |_, body, _, message|
+        endpoint = input["endpoint"]
++       input = input.except("endpoint")
++       res = get(call(:base_uri, connection) + "#{endpoint}", input.compact).after_error_response(400) do |_, body, _, message|
           error("#{message}: #{body}")
         end
         res
